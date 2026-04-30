@@ -334,7 +334,7 @@ with tab_fl:
         if st.button("Start FL Training", type="primary"):
             cfg = FLConfig(dp_epsilon=dp_eps, learning_rate=lr)
             eng = FLEngine(cfg)
-            for c in st.session_state.fl_engine._clients.values():
+            for c in st.session_state.fl_engine.clients:
                 eng.add_client(c)
             st.session_state.fl_engine = eng
 
@@ -364,8 +364,8 @@ with tab_fl:
     with sub_fl2:
         st.subheader("Clients")
         eng = st.session_state.fl_engine
-        for cid, client in eng._clients.items():
-            with st.expander(f"**{client.client_name}** ({cid})"):
+        for client in eng.clients:
+            with st.expander(f"**{client.client_name}** ({client.client_id})"):
                 c1, c2 = st.columns(2)
                 c1.metric("Samples", client.num_samples)
                 c2.metric("Quality Report", f"{client.data_quality:.1f}")
