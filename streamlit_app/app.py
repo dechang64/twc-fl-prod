@@ -1,439 +1,413 @@
 """
-TWC-FL Platform · Streamlit App
-三元催化配方联邦学习优化平台
+TWC-FL Platform — Three-Way Catalyst Federated Learning Collaboration Platform
+Streamlit Cloud Deployment Entry
 """
-import streamlit as st
-import requests
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+import sys
+import os
 
-# ── Config ──────────────────────────────────────────────────────────────────
-API_URL = "http://localhost:8000"
+sys.path.insert(0, os.path.dirname(__file__))
+
+import streamlit as st
+import numpy as np
+import pandas as pd
+
+from twc_fl_en import (
+    DataVault, FormulaRecord, DataQualityReport,
+    KnowledgeHub, FAQEntry, LiteratureRef,
+    BayesianOptimizer, CandidateFormula, OptimizationResult,
+    FLEngine, FLClient, FLConfig, AggregationResult,
+    AuditChain, AuditEntry,
+)
+
 st.set_page_config(
     page_title="TWC-FL Platform",
-    page_icon="⚗️",
+    page_icon="🔬",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
-def health_check():
-    try:
-        r = requests.get(f"{API_URL}/api/health", timeout=5)
-        return r.json() if r.ok else None
-    except Exception:
-        return None
+# ── Session State Init ──
+if "vault" not in st.session_state:
+    st.session_state.vault = DataVault(":memory:")
+    # Pre-load demo data
+    demos = [
+        ({"Pt": 1.5, "Pd": 2.0, "Rh": 0.1}, {"CO_conv": 95.0, "HC_conv": 93.0, "NOx_conv": 90.0, "T50": 215, "T90": 245}),
+        ({"Pt": 1.0, "Pd": 3.0, "Rh": 0.05}, {"CO_conv": 92.0, "HC_conv": 90.0, "NOx_conv": 88.0, "T50": 230, "T90": 260}),
+        ({"Pt": 2.0, "Pd": 1.5, "Rh": 0.2}, {"CO_conv": 96.0, "HC_conv": 94.0, "NOx_conv": 91.0, "T50": 205, "T90": 235}),
+        ({"Pt": 1.8, "Pd": 1.8, "Rh": 0.15}, {"CO_conv": 94.5, "HC_conv": 92.5, "NOx_conv": 89.5, "T50": 210, "T90": 240}),
+        ({"Pt": 0.8, "Pd": 2.5, "Rh": 0.08}, {"CO_conv": 91.0, "HC_conv": 88.5, "NOx_conv": 86.0, "T50": 240, "T90": 270}),
+    ]
+    for comp, perf in demos:
+        st.session_state.vault.add_formula(comp, perf)
 
+if "optimizer" not in st.session_state:
+    st.session_state.optimizer = BayesianOptimizer()
+    demos_obs = [
+        ({"Pt": 1.5, "Pd": 2.0, "Rh": 0.1}, {"NOx_conv": 90.0}),
+        ({"Pt": 1.0, "Pd": 3.0, "Rh": 0.05}, {"NOx_conv": 88.0}),
+        ({"Pt": 2.0, "Pd": 1.5, "Rh": 0.2}, {"NOx_conv": 92.0}),
+        ({"Pt": 1.8, "Pd": 1.8, "Rh": 0.15}, {"NOx_conv": 91.0}),
+        ({"Pt": 0.8, "Pd": 2.5, "Rh": 0.08}, {"NOx_conv": 87.0}),
+    ]
+    for comp, perf in demos_obs:
+        st.session_state.optimizer.add_single_observation(comp, perf)
 
-@st.cache_data(ttl=60)
-def call_predict(Pt, Pd, Rh, CeO2, ZrO2):
-    r = requests.post(
-        f"{API_URL}/api/predict",
-        json={"Pt": Pt, "Pd": Pd, "Rh": Rh, "CeO2": CeO2, "ZrO2": ZrO2},
-        timeout=30,
-    )
-    return r.json() if r.ok else None
+if "hub" not in st.session_state:
+    st.session_state.hub = KnowledgeHub()
 
+if "audit" not in st.session_state:
+    st.session_state.audit = AuditChain()
 
-@st.cache_data(ttl=300)
-def call_optimize(n_trials=60):
-    r = requests.post(
-        f"{API_URL}/api/optimize",
-        json={"n_trials": n_trials},
-        timeout=120,
-    )
-    return r.json() if r.ok else None
+# ── Sidebar ──
+with st.sidebar:
+    st.title("🔬 TWC-FL Platform")
+    st.caption("Three-Way Catalyst Federated Learning Collaboration Platform")
+    st.divider()
+    st.metric("Formula Database", f"{len(st.session_state.vault.records)} records")
+    st.metric("Knowledge FAQ", f"{len(st.session_state.hub.faqs)} entries")
+    st.metric("Audit Chain", f"{len(st.session_state.audit.entries)} records")
+    st.divider()
+    st.caption("v1.1.0 | Pure NumPy | Streamlit Cloud")
 
-
-@st.cache_data(ttl=300)
-def call_fl(n_rounds=5):
-    r = requests.post(
-        f"{API_URL}/api/fl/rounds",
-        json={"n_rounds": n_rounds},
-        timeout=60,
-    )
-    return r.json() if r.ok else None
-
-
-@st.cache_data(ttl=120)
-def list_formulations():
-    r = requests.get(f"{API_URL}/api/formulations", timeout=10)
-    return r.json() if r.ok else []
-
-
-def euro6_bar(val: float, threshold: float, label: str):
-    pct = min(100, val / threshold * 100)
-    ok = val >= threshold
-    color = "#22c55e" if ok else "#ef4444"
-    st.markdown(f"""
-    <div style="margin-bottom:4px">
-        <span style="font-size:13px; font-weight:600; width:48px; display:inline-block">{label}</span>
-        <span style="font-size:13px; color:{color}; font-weight:700; margin-left:8px">{val:.2f}{'%' if 'conv' in label.lower() else '°C'}</span>
-        <div style="background:#1a1d27; border-radius:4px; height:8px; margin-top:2px">
-            <div style="width:{pct:.1f}%; background:{color}; border-radius:4px; height:100%; transition:width 0.5s"></div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-# ── Styles ─────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-.stDeployButton {display:none !important}
-footer {visibility: hidden !important}
-[data-testid="stToolbar"] {display:none !important}
-[class="stStatusWidget"] {display:none !important}
-.block-container {padding-top: 1rem !important}
-header[data-testid="stHeader"] {display:none !important}
-.st-emotion-cache-1g2w5ys {padding: 0 !important}
-.stTabs > div:first-child {background: #1a1d27; border-radius: 12px; padding: 4px;}
-.stTabs button {border-radius: 8px !important; font-size: 14px !important; font-weight: 600 !important; padding: 8px 20px !important;}
-.stTabs button[aria-selected="true"] {background: #8b5cf6 !important; color: white !important;}
-.stMetric {background: #1a1d27 !important; border-radius: 10px !important; padding: 16px !important; border: 1px solid #2d3142 !important;}
-.stMetricValue {color: #e2e8f0 !important; font-weight: 800 !important;}
-.stMetricLabel {color: #64748b !important;}
-.stButton > button {border-radius: 8px !important; font-weight: 600 !important; height: 38px !important; transition: opacity 0.2s;}
-.stButton > button:hover {opacity: 0.85 !important;}
-.stSlider > div > div > div {color: #8b5cf6 !important;}
-</style>
-""", unsafe_allow_html=True)
-
-# ── Header ─────────────────────────────────────────────────────────────────
-col_logo, col_title, col_badge = st.columns([1, 8, 3])
-
-with col_logo:
-    st.markdown("""
-    <div style="font-size:2.5rem; text-align:center; line-height:1">⚗️</div>
-    """, unsafe_allow_html=True)
-
-with col_title:
-    st.markdown("""
-    <div style="font-size:1.4rem; font-weight:800; color:#e2e8f0; line-height:1.2">
-    TWC-FL Platform
-    </div>
-    <div style="font-size:0.82rem; color:#64748b; margin-top:4px">
-    三元催化配方 · 联邦学习优化平台
-    </div>
-    """, unsafe_allow_html=True)
-
-with col_badge:
-    health = health_check()
-    if health:
-        st.success(f"🟢 API: {health.get('version', '1.0')}")
-    else:
-        st.error("🔴 API离线")
-
-# ── Main ───────────────────────────────────────────────────────────────────
-st.divider()
-tabs = st.tabs([
-    "🔮 **配方预测**",
-    "🚀 **贝叶斯优化**",
-    "🔄 **联邦学习**",
-    "📋 **配方库**",
+# ── Main Tabs ──
+tab_overview, tab_vault, tab_knowledge, tab_optimizer, tab_fl, tab_audit = st.tabs([
+    "📊 Overview", "💾 Data Vault", "📚 Knowledge", "🎯 Bayesian", "🌐 FL Engine", "🔗 Audit Chain"
 ])
 
-# ── Tab 1: 配方预测 ──────────────────────────────────────────────────────
-with tabs[0]:
-    st.markdown("### 🔮 PyTorch 配方预测")
+# ═══════════════════════════════════════════════════════════════
+# Tab 1: Overview
+# ═══════════════════════════════════════════════════════════════
+with tab_overview:
+    st.header("📊 Platform Overview")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.subheader("💾 Data Vault (DataVault)")
+        st.markdown("""
+        - **P0** Formula data import (CSV/Excel/JSON)
+        - **P0** Formula anonymization (for FL participation)
+        - **P1** Data quality report (outliers/missing/distribution)
+        - **P1** Formula similarity search
+        """)
+    with col2:
+        st.subheader("🎯 Bayesian Optimization + 🌐 Federated Learning")
+        st.markdown("""
+        - **Bayesian Optimizer**: GP surrogate model + EI acquisition function
+        - **FL Engine**: FedAvg aggregation + Differential Privacy
+        - Pure NumPy implementation, no PyTorch dependency
+        - Streamlit Cloud compatible
+        """)
+    with col3:
+        st.subheader("📚 Knowledge Hub + 🔗 Audit Chain")
+        st.markdown("""
+        - **KnowledgeHub**: 20+ TWC industry FAQs
+        - **Literature**: Pd-Rh catalysis, OSC materials, AI optimization
+        - **AuditChain**: Blockchain-style audit, SHA-256 attestation
+        - Full traceability for data exchanges
+        """)
 
-    col_in, col_out = st.columns([1, 1.4])
+    st.divider()
+    st.subheader("🏗️ System Architecture")
+    st.code("""
+┌─────────────┐    ┌──────────────┐    ┌─────────────┐
+│  DataVault  │───▶│  Bayesian    │───▶│  FL Engine  │
+│  (Formula)  │    │  Optimizer   │    │  (FL)  │
+└─────────────┘    └──────────────┘    └─────────────┘
+       │                   │                   │
+       ▼                   ▼                   ▼
+┌─────────────┐    ┌──────────────┐    ┌─────────────┐
+│ KnowledgeHub│    │  AuditChain  │    │  Dashboard  │
+│  (Knowledge)    │    │  (Audit)    │    │  (Viz)    │
+└─────────────┘    └──────────────┘    └─────────────┘
+    """, language=None)
 
-    with col_in:
-        st.markdown("**配方输入**")
-        with st.container():
-            Pt = st.slider("Pt (g/L) · 铂", 0.0, 3.0, 1.5, 0.05, help="铂含量 — 主要影响CO转化率")
-            Pd = st.slider("Pd (g/L) · 钯", 0.0, 10.0, 5.0, 0.1, help="钯含量 — 主要影响HC转化率")
-            Rh = st.slider("Rh (g/L) · 铑", 0.0, 1.0, 0.3, 0.01, help="铑含量 — 决定NOx转化率，最贵")
-            CeO2 = st.slider("CeO₂ (g/L) · 铈", 50.0, 200.0, 100.0, 1.0)
-            ZrO2 = st.slider("ZrO₂ (g/L) · 锆", 0.0, 50.0, 20.0, 1.0)
-            name = st.text_input("配方名称（可选）", placeholder="如：Demo-A1")
+# ═══════════════════════════════════════════════════════════════
+# Tab 2: DataVault
+# ═══════════════════════════════════════════════════════════════
+with tab_vault:
+    st.header("💾 Data Vault")
 
-        submitted = st.button("⚡ 运行预测", type="primary", use_container_width=True)
+    sub_tab1, sub_tab2, sub_tab3, sub_tab4 = st.tabs(["Add Formula", "Quality Report", "Similarity Search", "Anonymization"])
 
-    with col_out:
-        st.markdown("**预测结果**")
-        if submitted or "pred" in st.session_state:
-            if submitted:
-                result = call_predict(Pt, Pd, Rh, CeO2, ZrO2)
-                if result:
-                    st.session_state["pred"] = result
-                else:
-                    st.error("❌ 预测失败，请检查后端服务")
-                    result = None
+    with sub_tab1:
+        st.subheader("Add New Formula")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Precious Metal Loadings**")
+            pt = st.number_input("Pt (g/L)", 0.0, 10.0, 1.5, 0.1, key="pt")
+            pd_ = st.number_input("Pd (g/L)", 0.0, 10.0, 2.0, 0.1, key="pd")
+            rh = st.number_input("Rh (g/L)", 0.0, 5.0, 0.1, 0.01, key="rh")
+        with col_b:
+            st.markdown("**Performance Metrics**")
+            co = st.number_input("CO_conv (%)", 0.0, 100.0, 95.0, 0.5, key="co")
+            hc = st.number_input("HC_conv (%)", 0.0, 100.0, 93.0, 0.5, key="hc")
+            nox = st.number_input("NOx_conv (%)", 0.0, 100.0, 90.0, 0.5, key="nox")
+        if st.button("Add Formula", type="primary"):
+            st.session_state.vault.add_formula(
+                {"Pt": pt, "Pd": pd_, "Rh": rh},
+                {"CO_conv": co, "HC_conv": hc, "NOx_conv": nox},
+            )
+            st.session_state.audit.append("formula_add", "user", {"Pt": pt, "Pd": pd_, "Rh": rh})
+            st.success(f"Formula added! Total: {len(st.session_state.vault.records)} records")
+            st.rerun()
+
+        st.divider()
+        st.subheader("Current Formula Data")
+        if st.session_state.vault.records:
+            df = st.session_state.vault.to_dataframe()
+            st.dataframe(df, use_container_width=True)
+
+    with sub_tab2:
+        st.subheader("Data Quality Report")
+        report = st.session_state.vault.quality_report()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Records", report.total_records)
+        c2.metric("Compliance Rate", f"{report.compliance_rate:.1f}%")
+        c3.metric("Outliers", report.outlier_count)
+        if report.warnings:
+            st.warning("⚠️ " + "\n⚠️ ".join(report.warnings))
+        if report.distribution_stats:
+            st.subheader("Distribution Statistics")
+            stats_df = pd.DataFrame(report.distribution_stats).T
+            st.dataframe(stats_df, use_container_width=True)
+
+    with sub_tab3:
+        st.subheader("Formula similarity search")
+        col_q1, col_q2 = st.columns(2)
+        with col_q1:
+            q_pt = st.number_input("Query Pt", 0.0, 10.0, 1.5, 0.1, key="q_pt")
+            q_pd = st.number_input("Query Pd", 0.0, 10.0, 2.0, 0.1, key="q_pd")
+        with col_q2:
+            q_rh = st.number_input("Query Rh", 0.0, 5.0, 0.1, 0.01, key="q_rh")
+            q_topk = st.number_input("Top-K", 1, 10, 3, key="q_topk")
+        if st.button("Search Similar"):
+            results = st.session_state.vault.search_similar(
+                {"Pt": q_pt, "Pd": q_pd, "Rh": q_rh}, top_k=int(q_topk)
+            )
+            if results:
+                for i, (rec, score) in enumerate(results):
+                    st.markdown(f"**#{i+1}** similarity={score:.4f} | {rec.composition} | {rec.performance}")
             else:
-                result = st.session_state.get("pred")
+                st.info("No matching results")
 
-            if result:
-                p = result["predictions"]
-                m6 = result["meets_euro6"]
-                fitness = result.get("fitness", 0)
+    with sub_tab4:
+        st.subheader("Data Anonymization (for FL Participation)")
+        st.caption("Add Gaussian noise to protect formula privacy, keep performance metrics as prediction targets")
+        seed = st.number_input("Random Seed", 0, 9999, 42, key="anon_seed")
+        noise = st.slider("Noise Scale", 0.0, 2.0, 0.5, 0.1)
+        if st.button("Generate Anonymized Data"):
+            anon_df = st.session_state.vault.anonymize(seed=int(seed), noise_scale=noise)
+            st.dataframe(anon_df, use_container_width=True)
+            st.session_state.audit.append("anonymize", "user", {"seed": seed, "noise": noise})
+            st.success("Anonymized data generated (downloadable for FL training)")
+            csv = anon_df.to_csv(index=False).encode("utf-8")
+            st.download_button("Download CSV", csv, "anonymized_formulas.csv", "text/csv")
 
-                # Euro6 bars
-                st.markdown("**Euro6 合规状态**")
-                euro6_bar(p["co_conv"], 94, "CO")
-                euro6_bar(p["hc_conv"], 94, "HC")
-                euro6_bar(p["nox_conv"], 90, "NOx")
-                euro6_bar(p["t50"], 200, "T50")
+# ═══════════════════════════════════════════════════════════════
+# Tab 3: KnowledgeHub
+# ═══════════════════════════════════════════════════════════════
+with tab_knowledge:
+    st.header("📚 TWC Domain Knowledge Hub")
 
-                # Status
-                if m6:
-                    st.success(f"✅ 满足 Euro6 排放标准  |  Fitness: **{fitness:.2f}**")
-                else:
-                    st.warning(f"⚠️ 不满足 Euro6 排放标准  |  Fitness: **{fitness:.2f}**")
+    sub_k1, sub_k2, sub_k3 = st.tabs(["FAQ Search", "Literature", "All FAQs"])
 
-                # Details
-                with st.expander("📊 详细数据"):
-                    c1, c2, c3, c4 = st.columns(4)
-                    items = [("CO", f"{p['co_conv']:.2f}%", p['co_conv'] >= 94),
-                             ("HC", f"{p['hc_conv']:.2f}%", p['hc_conv'] >= 94),
-                             ("NOx", f"{p['nox_conv']:.2f}%", p['nox_conv'] >= 90),
-                             ("T50", f"{p['t50']:.1f}°C", p['t50'] <= 200)]
-                    for c, (lbl, val, ok) in zip([c1,c2,c3,c4], items):
-                        c.metric(lbl, val,
-                                 delta="✓" if ok else "✗",
-                                 help=f"{'满足' if ok else '不满足'} Euro6")
+    with sub_k1:
+        query = st.text_input("Ask a question", placeholder="e.g. How to reduce Rh loading?", key="faq_q")
+        if query:
+            results = st.session_state.hub.search(query, top_k=5)
+            for faq, score in results:
+                with st.expander(f"**{faq.question}** (relevance: {score:.3f})"):
+                    st.markdown(faq.answer.replace("\\n", "\n"))
+                    if faq.references:
+                        st.caption("References: " + ", ".join(faq.references))
+                    if faq.tags:
+                        st.caption("Tags: " + ", ".join(faq.tags))
 
-                # Physics vs NN
-                with st.expander("🧠 PyTorch vs 物理方程对比"):
-                    phys = {
-                        "CO": 85 + 4.5*Pt + 2.1*Pd - 0.05*CeO2 + 0.02*ZrO2,
-                        "HC": 80 + 2.0*Pt + 5.5*Pd - 1.0*Rh - 0.03*CeO2 + 0.03*ZrO2,
-                        "NOx": 70 - 8.0*Pt - 3.0*Pd + 60.0*Rh - 0.02*CeO2 + 0.01*ZrO2,
-                        "T50": 280 - 60*Pt - 25*Pd - 80*Rh + 0.1*CeO2 - 0.2*ZrO2,
-                    }
-                    comp_df = pd.DataFrame({
-                        "指标": ["CO转化率", "HC转化率", "NOx转化率", "T50温度"],
-                        "PyTorch NN": [p["co_conv"], p["hc_conv"], p["nox_conv"], p["t50"]],
-                        "物理方程": [round(phys["CO"],2), round(phys["HC"],2), round(phys["NOx"],2), round(phys["T50"],2)],
-                    })
-                    comp_df["差异"] = abs(comp_df["PyTorch NN"] - comp_df["物理方程"]).round(2)
-                    st.dataframe(comp_df, use_container_width=True, hide_index=True)
+    with sub_k2:
+        topic = st.text_input("Research Topic", placeholder="e.g. Pd Rh catalyst", key="lit_topic")
+        if topic:
+            refs = st.session_state.hub.recommend_literature(topic)
+            if refs:
+                for ref in refs:
+                    with st.expander(f"**{ref.title}** ({ref.year})"):
+                        st.markdown(f"**Authors**: {ref.authors}")
+                        st.markdown(f"**Source**: {ref.source}")
+                        if ref.doi:
+                            st.markdown(f"**DOI**: {ref.doi}")
+                        if ref.key_findings:
+                            st.markdown("**Key Findings**:")
+                            for finding in ref.key_findings:
+                                st.markdown(f"- {finding}")
+            else:
+                st.info("No related literature found")
 
-    # Model arch info
-    with st.expander("ℹ️ TWCNet 模型架构"):
-        st.markdown("""
-        | 属性 | 值 |
-        |------|-----|
-        | 框架 | **PyTorch 2.2** |
-        | 网络结构 | 5 → 64 → 64 → 4 |
-        | 激活函数 | ReLU |
-        | 输出维度 | [CO%, HC%, NOx%, T50°C] |
-        | 推理策略 | PyTorch NN + 物理方程 50/50 加权融合 |
-        """)
-        st.markdown("**Euro6 排放标准阈值：** CO≥94% | HC≥94% | NOx≥90% | T50≤200°C")
+    with sub_k3:
+        cats = st.session_state.hub.get_categories()
+        selected_cat = st.selectbox("Filter by Category", ["All"] + cats, key="faq_cat")
+        faqs = st.session_state.hub.get_all_faqs()
+        if selected_cat != "All":
+            faqs = [f for f in faqs if f.category == selected_cat]
+        for faq in faqs:
+            with st.expander(faq.question):
+                st.markdown(faq.answer.replace("\\n", "\n"))
 
+# ═══════════════════════════════════════════════════════════════
+# Tab 4: BayesianOptimizer
+# ═══════════════════════════════════════════════════════════════
+with tab_optimizer:
+    st.header("🎯 Bayesian Formula Optimization")
+    st.caption("Gaussian Process surrogate model + Expected Improvement acquisition function")
 
-# ── Tab 2: 贝叶斯优化 ─────────────────────────────────────────────────────
-with tabs[1]:
-    st.markdown("### 🚀 Optuna 贝叶斯优化")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Optimization Settings")
+        target = st.selectbox("Optimization Target", ["NOx_conv", "CO_conv", "HC_conv", "T50"], key="opt_target")
+        mode = st.selectbox("Direction", ["maximize", "minimize"], key="opt_mode")
+        n_cand = st.slider("Candidates", 1, 10, 5, key="opt_n")
+    with c2:
+        st.subheader("Current Model Status")
+        opt = st.session_state.optimizer
+        st.metric("Observations", opt.num_observations if hasattr(opt, "num_observations") else len(opt.observations))
 
-    st.info("""
-    使用 **Optuna TPE**（Tree-structured Parzen Estimator）采样器，在 5 维配方空间搜索满足 Euro6 约束的最优配方。
-    目标：最大化 fitness score，同时满足 CO≥94%、HC≥94%、NOx≥90%。
-    """)
+    if st.button("Recommend Candidates", type="primary"):
+        with st.spinner("Running Bayesian optimization..."):
+            res = st.session_state.optimizer.recommend_candidates(target, mode, n_cand)
+            st.session_state.audit.append("optimize", "user", {"target": target, "mode": mode, "n": n_cand})
 
-    col_trial, col_btn = st.columns([1, 4])
-    with col_trial:
-        n_trials = st.selectbox("优化强度", [30, 60, 100], index=1, help="Trial数量越多结果越好，但耗时更长")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Model Confidence", f"{res.model_confidence:.2f}")
+            c2.metric("Current Best", f"{list(res.current_best.values())[0]:.2f}" if res.current_best else "N/A")
+            c3.metric("Improvement Potential", f"{res.improvement_potential:.2f}")
 
-    optimize_clicked = st.button("🚀 启动优化", type="primary", use_container_width=True)
+            st.subheader("Recommend Candidates")
+            for i, cand in enumerate(res.candidates):
+                with st.expander(f"**Candidate #{i+1}** | EI={cand.acquisition_score:.4f}"):
+                    cols = st.columns(len(cand.composition))
+                    for j, (elem, val) in enumerate(cand.composition.items()):
+                        with cols[j]:
+                            st.metric(elem, f"{val:.3f}")
+                    st.markdown("**Predicted Performance**:")
+                    for metric, val in cand.predicted_performance.items():
+                        st.markdown(f"- {metric}: {val:.2f} ± {cand.uncertainty.get(metric, 0):.2f}")
 
-    if optimize_clicked:
-        with st.spinner(f"Optuna {n_trials} trials 运行中，预计需要30~90秒…"):
-            result = call_optimize(n_trials)
-
-        if result:
-            best = result["best"]
-            history = result.get("history", [])
-
-            st.success(f"✅ 优化完成！最优配方 fitness: **{best.get('fitness', 0):.2f}**")
-
-            # Best formulation
-            st.markdown("**最优配方**")
-            bc1, bc2, bc3, bc4, bc5 = st.columns(5)
-            for c, (lbl, val, unit) in zip(
-                [bc1, bc2, bc3, bc4, bc5],
-                [("Pt", best.get("Pt", 0), "g/L"), ("Pd", best.get("Pd", 0), "g/L"),
-                          ("Rh", best.get("Rh", 0), "g/L"), ("CeO₂", best.get("CeO2", 0), "g/L"),
-                          ("ZrO₂", best.get("ZrO2", 0), "g/L")]
-            ):
-                c.metric(lbl, f"{val:.3f}" if lbl in ["Pt","Rh"] else f"{val:.1f}", unit)
-
-            p = best.get("predictions", {})
-            euro6_bar(p.get("co_conv", 0), 94, "CO")
-            euro6_bar(p.get("hc_conv", 0), 94, "HC")
-            euro6_bar(p.get("nox_conv", 0), 90, "NOx")
-
-            m6_ok = p.get("co_conv",0)>=94 and p.get("hc_conv",0)>=94 and p.get("nox_conv",0)>=90
-            st.success("✅ Euro6 全部通过" if m6_ok else "⚠️ 部分指标未达标")
-
-            # Convergence chart
-            if history and len(history) > 1:
-                st.markdown("**优化收敛曲线**")
-                df_h = pd.DataFrame(history)
-                df_h = df_h.dropna(subset=["fitness"])
-                df_h["trial_id"] = range(1, len(df_h)+1)
-
-                fig = px.line(
-                    df_h, x="trial_id", y="fitness",
-                    title=f"Fitness 收敛曲线 ({len(df_h)} trials)",
-                    labels={"fitness": "Fitness ↑", "trial_id": "Trial"},
-                    color_discrete_sequence=["#8b5cf6"],
-                )
-                fig.update_layout(
-                    plot_bgcolor="#1a1d27",
-                    paper_bgcolor="#0f1117",
-                    font_color="#e2e8f0",
-                    margin=dict(l=40, r=20, t=50, b=40),
-                )
-                fig.update_traces(fill="tozeroy", fillcolor="rgba(139,92,246,0.15)", line_width=2)
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.error("❌ 优化失败，请检查后端服务")
-
-    st.markdown("""
-    ---
-    **贝叶斯优化原理：**  
-    1. 用随机搜索 warmup（10 trials）建立初始观测  
-    2. TPE 根据历史结果构建概率代理模型（surrogate model）  
-    3. Expected Improvement (EI) 准则选择下一个候选点  
-    4. 重复直至收敛，比随机搜索快 3~5 倍
-    """)
-
-
-# ── Tab 3: 联邦学习 ─────────────────────────────────────────────────────
-with tabs[2]:
-    st.markdown("### 🔄 联邦学习模拟 (FedAvg)")
-
-    st.info("""
-    模拟三家催化剂企业（**威孚高科、润沃驰、催化剂厂**）在配方数据不出厂（Data Never Leaves）的前提下，
-    通过 **FedAvg（Federated Averaging）** 算法联合训练全局 TWC 预测模型。
-    """)
-
-    # Architecture diagram
-    with st.expander("🏗️ 联邦学习架构"):
-        st.markdown("""
-        ```
-        ┌─────────────────┐    权重更新     ┌─────────────────┐
-        │   Client-A       │ ←────────────→  │   Server         │
-        │  (威孚高科)       │    (梯度聚合)    │  (协调方)        │
-        │  本地数据训练     │                 │  全局模型聚合     │
-        └─────────────────┘                 └─────────────────┘
-                ↑                                        ↑
-        ┌─────────────────┐    权重更新     │  FedAvg: W = Σ w_i / n
-        │   Client-B       │ ←─────────────┘
-        │  (润沃驰)         │
-        └─────────────────┘
-                ↑
-        ┌─────────────────┐
-        │   Client-C       │
-        │  (催化剂厂)       │
-        └─────────────────┘
-
-        配方数据始终保留在各企业内部，不上传到服务器
-        ```
-        """)
-
-    col_rounds, col_start = st.columns([1, 4])
-    with col_rounds:
-        n_rounds = st.slider("FL 轮次", 3, 10, 5)
-
-    fl_clicked = st.button("🔄 运行联邦学习", type="primary", use_container_width=True)
-
-    if fl_clicked:
-        with st.spinner("FL 训练中，请稍候…"):
-            result = call_fl(n_rounds)
-
-        if result:
-            rounds = result.get("rounds", [])
-            final_r2 = result.get("final_global_r2", 0)
-            clients = result.get("n_clients", 3)
-
-            st.success(
-                f"✅ 完成 {clients} 家机构 · {len(rounds)} 轮训练 · "
-                f"最终全局 R² = **{final_r2:.4f}**"
-            )
-
-            # FL Results table
-            st.markdown("**各轮次结果**")
-            table_data = []
-            for r in rounds:
-                row = {"Round": f"Round {r['round']}"}
-                if r.get("clients"):
-                    for name, v in r["clients"].items():
-                        row[name] = f"{v.get('local_r2', 0):.4f}"
-                row["全局 R²"] = f"**{r.get('global_r2', 0):.4f}**"
-                table_data.append(row)
-
-            if table_data:
-                df_fl = pd.DataFrame(table_data)
-                st.dataframe(df_fl, use_container_width=True, hide_index=True)
-
-            # Convergence chart
-            if rounds:
-                st.markdown("**全局 R² 收敛曲线**")
-                df_r2 = pd.DataFrame([
-                    {"Round": r["round"], "全局R²": r.get("global_r2", 0)}
-                    for r in rounds
-                ])
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=df_r2["Round"], y=df_r2["全局R²"],
-                    mode="lines+markers",
-                    marker=dict(size=8, color="#34d399"),
-                    line=dict(color="#34d399", width=2.5),
-                    fill="tozeroy",
-                    fillcolor="rgba(52,211,153,0.1)",
-                ))
-                fig.update_layout(
-                    plot_bgcolor="#1a1d27",
-                    paper_bgcolor="#0f1117",
-                    font_color="#e2e8f0",
-                    yaxis=dict(range=[0, 1.05], title="R² Score"),
-                    xaxis=dict(title="FL Round"),
-                    margin=dict(l=40, r=20, t=30, b=40),
-                    height=300,
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-            # Privacy note
-            st.caption(
-                f"🔒 数据隐私保证：配方数据始终保留在各企业内部。"
-                f"仅上传模型权重更新（梯度）。"
-                f"算法：{result.get('fl_algorithm', 'FedAvg')}"
-            )
-
-
-# ── Tab 4: 配方库 ────────────────────────────────────────────────────────
-with tabs[3]:
-    st.markdown("### 📋 已保存配方库")
-
-    if st.button("🔄 刷新"):
+    st.divider()
+    st.subheader("Submit Experiment Feedback")
+    st.caption("Feed experiment results back to update the surrogate model")
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        fb_pt = st.number_input("Pt", 0.0, 10.0, 1.5, 0.1, key="fb_pt")
+        fb_pd = st.number_input("Pd", 0.0, 10.0, 2.0, 0.1, key="fb_pd")
+    with fc2:
+        fb_rh = st.number_input("Rh", 0.0, 5.0, 0.1, 0.01, key="fb_rh")
+    with fc3:
+        fb_val = st.number_input(f"{target} Measured", 0.0, 100.0, 90.0, 0.5, key="fb_val")
+    if st.button("Submit Result"):
+        st.session_state.optimizer.add_single_observation(
+            {"Pt": fb_pt, "Pd": fb_pd, "Rh": fb_rh},
+            {target: fb_val},
+        )
+        st.success("Experiment result submitted, model updated!")
         st.rerun()
 
-    try:
-        formulations = list_formulations()
-        if formulations and len(formulations) > 0:
-            df = pd.DataFrame(formulations)
-            df["Euro6"] = df.apply(
-                lambda r: "✅" if (r.get("co_conv",0)>=94 and r.get("hc_conv",0)>=94 and r.get("nox_conv",0)>=90) else "❌",
-                axis=1
-            )
-            st.dataframe(
-                df[["id","name","Pt","Pd","Rh","CeO2","ZrO2","co_conv","hc_conv","nox_conv","t50","fitness_score","Euro6"]],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.info("暂无配方数据，去「配方预测」页面创建配方吧！")
-    except Exception as e:
-        st.warning(f"无法加载配方库：{e}")
+# ═══════════════════════════════════════════════════════════════
+# Tab 5: FL Engine
+# ═══════════════════════════════════════════════════════════════
+with tab_fl:
+    st.header("🌐 Federated Learning Engine")
+    st.caption("FedAvg Aggregation + Differential Privacy | Pure NumPy Simulation")
 
-# ── Footer ────────────────────────────────────────────────────────────────
-st.divider()
-st.caption(
-    "TWC-FL Platform v1.0 · 苏州市社科联课题 J2025LX005 · "
-    "技术栈: FastAPI + PyTorch + Optuna + Streamlit"
-)
+    if "fl_engine" not in st.session_state:
+        st.session_state.fl_engine = FLEngine(FLConfig(dp_epsilon=10.0))
+        st.session_state.fl_engine.add_client(FLClient("c1", "Enterprise A", num_samples=200))
+        st.session_state.fl_engine.add_client(FLClient("c2", "Enterprise B", num_samples=150))
+        st.session_state.fl_engine.add_client(FLClient("c3", "Enterprise C", num_samples=180))
+
+    sub_fl1, sub_fl2 = st.tabs(["FL Simulation", "Client Management"])
+
+    with sub_fl1:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            rounds = st.slider("Training Rounds", 1, 20, 10, key="fl_rounds")
+        with c2:
+            dp_eps = st.number_input("DP ε (Privacy Budget)", 0.0, 100.0, 10.0, 1.0, key="fl_dp")
+        with c3:
+            lr = st.number_input("Learning Rate", 0.001, 0.1, 0.01, 0.005, format="%.3f", key="fl_lr")
+
+        if st.button("Start FL Training", type="primary"):
+            cfg = FLConfig(dp_epsilon=dp_eps, learning_rate=lr)
+            eng = FLEngine(cfg)
+            for c in st.session_state.fl_engine._clients.values():
+                eng.add_client(c)
+            st.session_state.fl_engine = eng
+
+            with st.spinner("FL training in progress..."):
+                history = eng.run_simulation(rounds)
+                st.session_state.audit.append("fl_train", "system", {"rounds": rounds, "dp": dp_eps})
+
+            # Plot convergence
+            st.subheader("Convergence Curve")
+            loss_data = pd.DataFrame([
+                {"Round": r.round_id, "Global Loss": r.global_loss, "Clients": r.participating_clients}
+                for r in history
+            ])
+            st.line_chart(loss_data, x="Round", y="Global Loss")
+
+            # Summary
+            summary = eng.get_convergence_summary()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Status", summary["status"])
+            c2.metric("Loss Change", f"{summary['improvement_pct']:.1f}%")
+            c3.metric("Final Loss", f"{history[-1].global_loss:.4f}")
+
+            # Per-round details
+            with st.expander("Per-Round Details"):
+                st.dataframe(loss_data, use_container_width=True)
+
+    with sub_fl2:
+        st.subheader("Clients")
+        eng = st.session_state.fl_engine
+        for cid, client in eng._clients.items():
+            with st.expander(f"**{client.client_name}** ({cid})"):
+                c1, c2 = st.columns(2)
+                c1.metric("Samples", client.num_samples)
+                c2.metric("Quality Report", f"{client.data_quality:.1f}")
+                st.caption(f"Specialty: {client.specialty} | Local Epochs: {client.local_epochs}")
+
+# ═══════════════════════════════════════════════════════════════
+# Tab 6: AuditChain
+# ═══════════════════════════════════════════════════════════════
+with tab_audit:
+    st.header("🔗 Blockchain Audit Chain")
+    st.caption("SHA-256 hash chain | Data attestation | Tamper detection")
+
+    c1, c2, c3 = st.columns(3)
+    chain = st.session_state.audit
+    c1.metric("Total Entries", len(chain.entries))
+    valid = chain.verify_chain()
+    c2.metric("Chain Integrity", "✅ Intact" if valid else "❌ Tampered")
+    summary = chain.get_summary()
+    c3.metric("Action Types", summary.get("action_types", 0))
+
+    st.divider()
+
+    sub_a1, sub_a2 = st.tabs(["Audit Log", "Chain Verification"])
+
+    with sub_a1:
+        if chain.entries:
+            df = chain.to_dataframe()
+            st.dataframe(df, use_container_width=True)
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button("Export Audit Log", csv, "audit_chain.csv", "text/csv")
+        else:
+            st.info("No audit records yet")
+
+    with sub_a2:
+        st.subheader("Chain Integrity Verification")
+        if st.button("Verify Audit Chain"):
+            valid = chain.verify_chain()
+            if valid:
+                st.success("✅ Audit chain is intact, all records are untampered!")
+            else:
+                st.error("❌ Audit chain has been tampered with!")
+
+        st.subheader("JSON Export")
+        json_str = chain.export_json()
+        st.code(json_str[:2000] + ("..." if len(json_str) > 2000 else ""), language="json")
