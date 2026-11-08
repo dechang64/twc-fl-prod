@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Security
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -31,6 +32,19 @@ def startup():
     init_db()
     print("✅ Database initialized")
 
+# ── API Key Auth ────────────────────────────────────────────────────────────────
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+def _verify_api_key(api_key: str = Security(_api_key_header)):
+    """Require X-API-Key header for write operations. Health/read endpoints are open."""
+    expected = os.environ.get("API_KEY", "")
+    if not expected:
+        # If API_KEY not configured, allow all (development mode)
+        return "dev"
+    if api_key != expected:
+        raise HTTPException(403, "Invalid or missing API key")
+    return api_key
+
 # ── Schemas ─────────────────────────────────────────────────────────────────────
 class FormulationCreate(BaseModel):
     name: Optional[str] = None
@@ -56,7 +70,7 @@ def health():
     }
 
 @app.post("/api/formulations")
-def create_formulation(data: FormulationCreate, db: Session = Depends(get_db)):
+def create_formulation(data: FormulationCreate, db: Session = Depends(get_db), _auth=Depends(_verify_api_key)):
     p = predict_twc(data.Pt, data.Pd, data.Rh, data.CeO2, data.ZrO2)
     fitness = compute_fitness(p['co_conv'], p['hc_conv'], p['nox_conv'], p['t50'])
     meets = p['co_conv'] >= 94 and p['hc_conv'] >= 94 and p['nox_conv'] >= 90
@@ -104,7 +118,7 @@ def predict(req: PredictRequest):
     }
 
 @app.post("/api/optimize")
-def optimize(req: OptimizeRequest):
+def optimize(req: OptimizeRequest, _auth=Depends(_verify_api_key)):
     result = optimize_twc(n_trials=req.n_trials)
     return result
 
@@ -121,7 +135,7 @@ def fl_status(db: Session = Depends(get_db)):
     }
 
 @app.post("/api/fl/rounds")
-def run_fl(req: FLRequest, db: Session = Depends(get_db)):
+def run_fl(req: FLRequest, db: Session = Depends(get_db), _auth=Depends(_verify_api_key)):
     result = run_fl_simulation(n_rounds=req.n_rounds)
     for rd in result['rounds']:
         fr = FLRound(
